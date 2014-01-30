@@ -1,0 +1,872 @@
+#!/bin/bash
+
+# ---------------------------------------------------------------------------
+# Copyright (C) 2013-2014 by Michiel Broek.
+# Homepage                   http://www.mbse.eu
+# Email                      mbse At mbse dOt eu
+#
+# This file is part of mbse-firewall.
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2, or (at your option) any
+# later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; see the file COPYING.  If not, write to the Free
+# Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
+# ---------------------------------------------------------------------------
+
+MBSEFW_VERSION="0.0.12"
+
+# Sanity checks
+if [ "$(id -u)" != "0" ]; then
+  echo "** You must be root to run this program"
+  exit 1
+fi
+
+# If possible, log events in /var/log/messages:
+if [ -f /var/run/syslogd.pid -a -x /usr/bin/logger ]; then
+  LOGGER=/usr/bin/logger
+else # output to stdout/stderr:
+  LOGGER=/bin/cat
+fi
+
+
+# IPv6 enabled?
+USE_IPV6="0"
+if [ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ] && [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" == "0" ]; then
+  USE_IPV6="1"
+fi
+
+# Find programs
+IPTABLES=$(which iptables 2>/dev/null)
+IPTABLES_SAVE=$(which iptables-save 2>/dev/null)
+IPTABLES_RESTORE=$(which iptables-restore 2>/dev/null)
+LSMOD=$(which lsmod 2>/dev/null)
+AWK=$(which awk 2>/dev/null)
+GREP=$(which grep 2>/dev/null)
+IPSET=$(which ipset 2>/dev/null)
+SYSCTL=$(which sysctl 2>/dev/null)
+
+if [ "$USE_IPV6" = "1" ]; then
+  IP6TABLES=$(which ip6tables 2>/dev/null)
+  IP6TABLES_SAVE=$(which ip6tables-save 2>/dev/null)
+  IP6TABLES_RESTORE=$(which ip6tables-restore 2>/dev/null)
+fi
+
+
+# Load configuration
+if [ ! -f /etc/mbse-firewall/firewall.conf ]; then 
+  echo "** /etc/mbse-firewall/firewall.conf not found, abort"
+  exit 1
+fi
+. /etc/mbse-firewall/firewall.conf
+
+# Some defaults, they are replaced when configured in 
+# /etc/mbse-firewall/firewall.conf
+
+IF_EXT_AUTO_TO=${IF_EXT_AUTO_TO:=3600}
+IF_EXT_AUTO_LIMIT=${IF_EXT_AUTO_LIMIT:=5/hour}
+IF_EXT_AUTO_BURST=${IF_EXT_AUTO_BURST:=10}
+
+# ---------------------------------------------------------------------------
+#
+#      Functions
+#
+# ---------------------------------------------------------------------------
+
+
+# Reset iptables back to Slackware default.
+reset_iptables() {
+
+  if [ -f /proc/net/ip_tables_names ]; then
+    cat /proc/net/ip_tables_names | while read table; do
+      $IPTABLES -t $table -L -n | while read c chain rest; do
+        if test "X$c" = "XChain" ; then
+          $IPTABLES -t $table -F $chain
+        fi
+      done
+      $IPTABLES -t $table -X
+    done
+
+    $IPTABLES -P INPUT   $1
+    $IPTABLES -P OUTPUT  $1
+    $IPTABLES -P FORWARD $1
+    echo "Reset iptables  default policy $1" | $LOGGER
+  fi
+
+  if [ "$USE_IPV6" == "1" ] && [ -f /proc/net/ip6_tables_names ]; then
+    cat /proc/net/ip6_tables_names | while read table; do
+      $IP6TABLES -t $table -L -n | while read c chain rest; do
+        if test "X$c" = "XChain" ; then
+          $IP6TABLES -t $table -F $chain
+        fi
+      done
+      $IP6TABLES -t $table -X
+    done
+    $IP6TABLES -P OUTPUT  $1
+    $IP6TABLES -P INPUT   $1
+    $IP6TABLES -P FORWARD $1
+    echo "Reset ip6tables default policy $1" | $LOGGER
+  fi
+
+  # Remove any ipset tables.
+  $IPSET flush
+  $IPSET destroy
+}
+
+
+
+is_external_if4() {
+  [ "x${IF_EXT}" == "x$1" ] && return 1
+
+  return 0
+}
+
+
+
+is_external_if6() {
+  if [ "$USE_IPV6" == "1" ]; then
+    [ "x${IF_EXT6}" == "x$1" ] && return 1
+    [ "x${IF_EXT}" == "x$1" -a -z "${IF_EXT6}" ] && return 1
+  fi
+
+  return 0
+}
+
+
+
+reload_blocklist4() {
+
+  BLOCKLIST="/etc/mbse-firewall/conf.d/blocklist4.conf"
+  if [ -f $BLOCKLIST ]; then
+    echo "Reload $BLOCKLIST" | $LOGGER
+    $IPSET create new-mbsefw-blk4ip hash:ip counters -exist
+    $IPSET create new-mbsefw-blk4net hash:net counters -exist
+    $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
+      set $L
+      if echo $1 | $GREP -q "/" ; then
+        $IPSET add new-mbsefw-blk4net $1 -exist
+      else
+        $IPSET add new-mbsefw-blk4ip $1 -exist
+      fi
+    done
+    $IPSET swap mbsefw-blk4net new-mbsefw-blk4net
+    $IPSET flush new-mbsefw-blk4net
+    $IPSET destroy new-mbsefw-blk4net
+    $IPSET swap mbsefw-blk4ip new-mbsefw-blk4ip
+    $IPSET flush new-mbsefw-blk4ip
+    $IPSET destroy new-mbsefw-blk4ip
+  fi
+}
+
+
+
+reload_blocklist6() {
+
+  BLOCKLIST="/etc/mbse-firewall/conf.d/blocklist6.conf"
+  if [ -f $BLOCKLIST ]; then
+    echo "Reload $BLOCKLIST" | $LOGGER
+    $IPSET create new-mbsefw-blk6 hash:net family inet6 counters -exist
+    $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
+      set $L ; $IPSET add new-mbsefw-blk6 $1 -exist
+    done
+    $IPSET swap mbsefw-blk6 new-mbsefw-blk6
+    $IPSET flush new-mbsefw-blk6
+    $IPSET destroy new-mbsefw-blk6
+  fi
+}
+
+
+
+fw_init_sysctl() {
+  # If we have bridges and don't want iptables to work between
+  # the physical interfaces, turn it off.
+  if [ "$FW_NO_BRIDGE_NF_CALL" = "1" ]; then
+    $SYSCTL -e -q -w net.bridge.bridge-nf-call-arptables=0
+    $SYSCTL -e -q -w net.bridge.bridge-nf-call-ip6tables=0
+    $SYSCTL -e -q -w net.bridge.bridge-nf-call-iptables=0
+  fi
+
+  # No arp about internal interfaces across the border.
+  if [ "$IF_EXT_IS_BORDER_GW" = "1" ]; then
+    $SYSCTL -q -w net.ipv4.conf.${IF_EXT}.arp_ignore=1
+    $SYSCTL -q -w net.ipv4.conf.${IF_EXT}.arp_announce=1
+  fi
+}
+
+
+
+fw_start_init() {
+
+  echo "Init new firewall" | $LOGGER
+
+  BLOCKLIST="/etc/mbse-firewall/conf.d/blocklist4.conf"
+  if [ -f $BLOCKLIST -a -n "$IF_EXT" ]; then
+    echo "  Install $BLOCKLIST" | $LOGGER
+    $IPSET create mbsefw-blk4ip hash:ip counters -exist
+    $IPSET create mbsefw-blk4net hash:net counters -exist
+    $IPTABLES -A INPUT -i $IF_EXT -m set --match-set mbsefw-blk4ip src -j DROP
+    $IPTABLES -A INPUT -i $IF_EXT -m set --match-set mbsefw-blk4net src -j DROP
+    if [ "$FW_FORWARD" = "1" ]; then
+      $IPTABLES -A FORWARD -i $IF_EXT -m set --match-set mbsefw-blk4ip src -j DROP
+      $IPTABLES -A FORWARD -i $IF_EXT -m set --match-set mbsefw-blk4net src -j DROP
+    fi
+    $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
+      set $L
+      if echo $1 | $GREP -q "/" ; then
+        $IPSET add mbsefw-blk4net $1 -exist
+      else
+	$IPSET add mbsefw-blk4ip $1 -exist
+      fi
+    done
+    echo -n "."
+  fi
+
+  BLOCKLIST="/etc/mbse-firewall/conf.d/blocklist6.conf"
+  if [ -f $BLOCKLIST ]; then
+    echo "  Install $BLOCKLIST" | $LOGGER
+    $IPSET create mbsefw-blk6 hash:net family inet6 counters -exist
+    if [ -n "$IF_EXT6" ]; then
+      IF6=$IF_EXT6
+    else
+      IF6=$IF_EXT
+    fi
+    $IP6TABLES -A INPUT -i $IF6 -m set --match-set mbsefw-blk6 src -j DROP
+    if [ "$FW_FORWARD" = "1" ]; then
+      $IP6TABLES -A FORWARD -i $IF6 -m set --match-set mbsefw-blk6 src -j DROP
+    fi
+    $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
+      set $L
+      $IPSET add mbsefw-blk6 $1 -exist
+    done
+    echo -n "."
+  fi
+
+  # accept established and related connections
+  $IPTABLES -A INPUT   -m state --state ESTABLISHED,RELATED -j ACCEPT 
+  $IPTABLES -A OUTPUT  -m state --state ESTABLISHED,RELATED -j ACCEPT 
+  [ "$FW_FORWARD" = "1" ] && $IPTABLES -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+  if [ "$USE_IPV6" == "1" ]; then
+    $IP6TABLES -A INPUT   -m state --state ESTABLISHED,RELATED -j ACCEPT
+    $IP6TABLES -A OUTPUT  -m state --state ESTABLISHED,RELATED -j ACCEPT
+    [ "$FW_FORWARD" = "1" ] && $IP6TABLES -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+  fi
+
+  # drop packets that do not match any valid state. This also blocks invalid
+  # flag combinations that are used by portscans.
+  $IPTABLES -A OUTPUT   -m state --state INVALID  -j DROP 
+  $IPTABLES -A INPUT    -m state --state INVALID  -j DROP 
+  [ "$FW_FORWARD" = "1" ] && $IPTABLES -A FORWARD  -m state --state INVALID  -j DROP
+  if [ "$USE_IPV6" == "1" ]; then
+    $IP6TABLES -A OUTPUT   -m state --state INVALID  -j DROP
+    $IP6TABLES -A INPUT    -m state --state INVALID  -j DROP
+    [ "$FW_FORWARD" = "1" ] && $IP6TABLES -A FORWARD  -m state --state INVALID  -j DROP
+  fi
+
+  # Allow everything on the loopback interface
+  $IPTABLES -A INPUT  -i lo   -j ACCEPT
+  $IPTABLES -A OUTPUT -o lo   -j ACCEPT
+  if [ "$USE_IPV6" == "1" ]; then
+    $IP6TABLES -A INPUT  -i lo   -j ACCEPT
+    $IP6TABLES -A OUTPUT -o lo   -j ACCEPT
+  fi
+
+  # Anti spoofing on the external interface. Methods since the 3.3 kernel!
+  if [ -n "$IF_EXT" ]; then
+    for f in $(ls /proc/sys/net/ipv4/conf/*/rp_filter); do
+      echo 1 > $f
+    done 
+    $IPTABLES  -A PREROUTING -t raw -i $IF_EXT -m rpfilter --invert -j DROP
+    if [ "$USE_IPV6" == "1" ]; then
+      if [ -n "$IF_EXT6" ]; then
+        $IP6TABLES -A PREROUTING -t raw -i $IF_EXT6 -m rpfilter --invert -j DROP
+      else
+        $IP6TABLES -A PREROUTING -t raw -i $IF_EXT -m rpfilter --invert -j DROP
+      fi
+    fi
+    # Manual anti spoofing on the interfaces is configured using the
+    # interfaces configuration and only if the system is a router.
+  fi
+
+  # IPv4 ssh backdoor
+  if [ -n "$IPV4_BACKDOOR_SSH" ]; then
+    $IPTABLES -A INPUT  -p tcp -m tcp  -s $IPV4_BACKDOOR_SSH  --dport 22  -m state --state NEW,ESTABLISHED -j  ACCEPT 
+    $IPTABLES -A OUTPUT -p tcp -m tcp  -d $IPV4_BACKDOOR_SSH  --sport 22  -m state --state ESTABLISHED,RELATED -j ACCEPT
+  fi
+  # IPv6 ssh backdoor
+  if [ "$USE_IPV6" == "1" ] && [ -n "$IPV6_BACKDOOR_SSH" ]; then
+    $IP6TABLES -A INPUT  -p tcp -m tcp  -s $IPV6_BACKDOOR_SSH  --dport 22  -m state --state NEW,ESTABLISHED -j  ACCEPT
+    $IP6TABLES -A OUTPUT -p tcp -m tcp  -d $IPV6_BACKDOOR_SSH  --sport 22  -m state --state ESTABLISHED,RELATED -j ACCEPT
+  fi
+
+  # Usefull ICMPv4
+  $IPTABLES -A INPUT   -p icmp  -m icmp  --icmp-type 3    -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+  $IPTABLES -A INPUT   -p icmp  -m icmp  --icmp-type 0/0  -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+  $IPTABLES -A INPUT   -p icmp  -m icmp  --icmp-type 8/0  -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+  $IPTABLES -A INPUT   -p icmp  -m icmp  --icmp-type 11/0 -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+  $IPTABLES -A INPUT   -p icmp  -m icmp  --icmp-type 11/1 -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+  $IPTABLES -A INPUT   -p icmp  -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv4_INPUT "
+  $IPTABLES -A INPUT   -p icmp  -j DROP
+  $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 3    -j ACCEPT
+  $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 0/0  -j ACCEPT
+  $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 8/0  -j ACCEPT
+  $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 11/0 -j ACCEPT
+  $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 11/1 -j ACCEPT
+  $IPTABLES -A OUTPUT  -p icmp  -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv4_OUTPUT "
+  $IPTABLES -A OUTPUT  -p icmp  -j DROP
+  if [ "$FW_FORWARD" = "1" ]; then
+    $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 3    -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+    $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 0/0  -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+    $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 8/0  -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+    $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 11/0 -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+    $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 11/1 -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
+    $IPTABLES -A FORWARD -p icmp  -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv4_FORWARD "
+    $IPTABLES -A FORWARD -p icmp  -j DROP
+  fi
+
+  # If this system has enabled IPv6 ...
+  if [ "$USE_IPV6" == "1" ]; then
+    # ICMPv6
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type destination-unreachable -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type packet-too-big -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type time-exceeded  -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type parameter-problem -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type destination-unreachable -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type packet-too-big -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type time-exceeded -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type parameter-problem -j ACCEPT
+    if [ "$FW_FORWARD" = "1" ]; then
+      $IP6TABLES -A FORWARD -p ipv6-icmp -m icmp6 --icmpv6-type destination-unreachable -j ACCEPT
+      $IP6TABLES -A FORWARD -p ipv6-icmp -m icmp6 --icmpv6-type packet-too-big -j ACCEPT
+      $IP6TABLES -A FORWARD -p ipv6-icmp -m icmp6 --icmpv6-type time-exceeded -j ACCEPT
+      $IP6TABLES -A FORWARD -p ipv6-icmp -m icmp6 --icmpv6-type parameter-problem -j ACCEPT
+    fi
+
+    # Rate limited icmpv6
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type echo-request -m limit --limit 15/second -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type echo-reply   -m limit --limit 15/second -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type echo-request -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type echo-reply   -j ACCEPT
+    if [ "$FW_FORWARD" = "1" ]; then
+      $IP6TABLES -A FORWARD -p ipv6-icmp -m icmp6 --icmpv6-type echo-request -m limit --limit 15/second -j ACCEPT
+      $IP6TABLES -A FORWARD -p ipv6-icmp -m icmp6 --icmpv6-type echo-reply   -m limit --limit 15/second -j ACCEPT
+    fi
+
+    # rules to permit IPv6 Neighbor discovery
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type router-solicitation -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type router-advertisement -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-advertisement -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type router-solicitation -m hl --hl-eq 255 -j ACCEPT 
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type router-advertisement -m hl --hl-eq 255 -j ACCEPT 
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT 
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-advertisement -m hl --hl-eq 255 -j ACCEPT 
+
+    # MLD messages. DROP on external interface, but ACCEPT on others.
+    if [ -n "$IF_EXT6" -a "$IF_EXT_IS_BORDER_GW" = "1" ]; then
+      $IP6TABLES -A OUTPUT -o $IF_EXT6 -p ipv6-icmp -d ff00::/8 -m icmp6 --icmpv6-type 143 -j DROP
+    elif [ -n "$IF_EXT" -a "$IF_EXT_IS_BORDER_GW" = "1" ]; then
+      $IP6TABLES -A OUTPUT -o $IF_EXT -p ipv6-icmp -d ff00::/8 -m icmp6 --icmpv6-type 143 -j DROP
+    fi
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -d ff00::/8 -m icmp6 --icmpv6-type 143 -j ACCEPT
+
+    # Drop unmatched icmpv6 but log them so we can debug
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv6_INPUT "
+    $IP6TABLES -A INPUT   -p ipv6-icmp -j DROP
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv6_OUTPUT "
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -j DROP
+    [ "$FW_FORWARD" = "1" ] && {
+      $IP6TABLES -A FORWARD -p ipv6-icmp -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv6_FORWARD "
+      $IP6TABLES -A FORWARD -p ipv6-icmp -j DROP
+    }
+  fi
+
+  if [ "$CLAMP_MSS_TO_PMTU" = "1" ]; then
+    # ================ Table 'mangle', automatic rules
+    [ "$FW_FORWARD" = "1" ] && $IPTABLES -t mangle -A FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    if [ "$USE_IPV6" == "1" ]; then
+      [ "$FW_FORWARD" = "1" ] && $IP6TABLES -t mangle -A FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    fi
+  fi
+
+  # Filter all packets that have RH0 header
+  if [ "$USE_IPV6" == "1" ]; then
+    # Filter all packets that have RH0 header
+    $IP6TABLES -A OUTPUT  -m rt --rt-type 0  -j DROP
+    $IP6TABLES -A INPUT   -m rt --rt-type 0  -j DROP
+    [ "$FW_FORWARD" = "1" ] && $IP6TABLES -A FORWARD -m rt --rt-type 0  -j DROP
+
+    # Allow Link-Local sddresses
+    $IP6TABLES -A INPUT   -s fe80::/10   -j ACCEPT
+    $IP6TABLES -A OUTPUT  -s fe80::/10   -j ACCEPT
+
+    # Allow Multicast
+    $IP6TABLES -A INPUT   -d ff00::/8   -j ACCEPT
+    $IP6TABLES -A OUTPUT  -d ff00::/8   -j ACCEPT
+  fi
+
+  # Traceroute
+  if [ "$FW_TRACEROUTE" = "1" ]; then
+    $IPTABLES -A OUTPUT  -p udp -m udp  --dport 33434:33524  -m state --state NEW  -j ACCEPT
+    $IPTABLES -A INPUT   -p udp -m udp  --dport 33434:33524  -m state --state NEW  -j ACCEPT
+    [ "$FW_FORWARD" = "1" ] && $IPTABLES -A FORWARD -p udp -m udp  --dport 33434:33524  -m state --state NEW  -j ACCEPT
+    if [ "$USE_IPV6" == "1" ]; then
+      $IP6TABLES -A OUTPUT  -p udp -m udp  --dport 33434:33524  -m state --state NEW  -j ACCEPT
+      $IP6TABLES -A INPUT   -p udp -m udp  --dport 33434:33524  -m state --state NEW  -j ACCEPT
+      [ "$FW_FORWARD" = "1" ] && $IP6TABLES -A FORWARD -p udp -m udp  --dport 33434:33524  -m state --state NEW  -j ACCEPT
+    fi
+  fi
+
+  echo -n "."
+}
+
+
+
+fw_start_interface_chain()
+{
+  local multi iodir IFS=\;
+
+  INTF=$1
+  FCHAIN=$2
+  NCHAIN=$3
+  SCHAIN=$4
+  CONFFILE="/etc/mbse-firewall/conf.d/${INTF}-${FCHAIN}.conf"
+  is_external_if4 $1
+  EXTERN4=$?
+  is_external_if6 $1
+  EXTERN6=$?
+
+  # TODO: use subchains, but we need to do 2 passes on the config
+  # files to make it work.
+
+  # Are there rules for this chain?
+  if [ -f $CONFFILE ]; then
+    echo " Start chain ${NCHAIN} on interface ${INTF} is external ipv4: ${EXTERN4} ipv6: ${EXTERN6}" | $LOGGER
+    
+    # Install auto blacklisting if set for this interface and this is the
+    # INPUT or FORWARD chain. In /etc/mbse-firewall/firewall.conf set then
+    # IF_EXT_AUTO_TO value for the block timeout. Default is 3600 seconds.
+    # See the end of this function for the actual test.
+    if [ "$NCHAIN" = "INPUT" -o "$NCHAIN" = "FORWARD" ]; then
+      if [ "$IF_EXT_AUTO_BLOCK" = "1" ]; then
+        if [ "$EXTERN4" = "1" ]; then
+	  echo "  Installing IPv4 auto blacklisting on interface ${INTF}" | $LOGGER
+          $IPSET create mbsefw-auto4 hash:ip timeout $IF_EXT_AUTO_TO counters -exist
+          $IPTABLES -I $NCHAIN -m set --match-set mbsefw-auto4 src -j DROP
+	fi
+	if [ "$EXTERN6" = "1" ]; then
+	  echo "  Installing IPv6 auto blacklisting on interface ${INTF}" | $LOGGER
+          $IPSET create mbsefw-auto6 hash:ip family inet6 timeout $IF_EXT_AUTO_TO counters -exist
+          $IP6TABLES -I $NCHAIN -m set --match-set mbsefw-auto6 src -j DROP
+	fi
+      fi
+    fi
+
+    # Adjust for the direction of the chain
+    if [ "$NCHAIN" = "OUTPUT" -o "$NCHAIN" = "POSTROUTING" ]; then
+      iodir="-o"
+    else
+      iodir="-i"
+    fi
+
+    # Read the configuration
+    $GREP -Ev '^#|^\s*$' $CONFFILE | while read L ; do
+      set $L
+      # Build command
+      if [ "$1" = "6" ]; then
+	CMD=$IP6TABLES
+      else
+	CMD=$IPTABLES 
+      fi
+
+      if [ -n "$2" ]; then
+        args=("-t" "$2" "-A" "$NCHAIN" "$iodir" "${INTF}")
+      else
+	args=("-A" "$NCHAIN" "$iodir" "${INTF}")
+      fi
+
+      # Protocol
+      [ -n "$3" ] && args+=("-p" "$3" "-m" "$3")
+
+      # Test for multiport
+      multi=0
+      [ -n "$5$7" ] && {
+	[[ $5$7 == *","* ]] && multi=1
+	[[ $5$7 == *":"* ]] && multi=1
+      }
+      [ "$multi" = "1" ] && args+=("-m" "multiport")
+
+      # Source address
+      [ -n "$4" ] && args+=("-s" "$4")
+
+      # Source port(s)
+      [ -n "$5" ] && {
+	multi=0
+	[[ $5 == *","* ]] && multi=1
+	[[ $5 == *":"* ]] && multi=1
+	if [ "$multi" = "1" ]; then
+	  args+=("--sports" "$5")
+	else
+	  args+=("--sport" "$5")
+	fi
+      }
+
+      # Destination address
+      [ -n "$6" ] && args+=("-d" "$6")
+
+      # Destination port(s)
+      [ -n "$7" ] && {
+	multi=0
+	[[ $7 == *","* ]] && multi=1
+	[[ $7 == *":"* ]] && multi=1
+	if [ "$multi" = "1" ]; then
+	  args+=("--dports" "$7")
+	else
+	  args+=("--dport" "$7")
+	fi
+      }
+
+      # Rule options
+      [ -n "$9" ] && {
+	IFS=' '
+	for arg in $9; do
+	  args+=("$arg")
+	done
+	IFS=\;
+      }
+
+      # Rule action
+      [ -n "$8" ] && { 
+	IFS=' '
+	args+=("-j")
+	for arg in $8; do
+	  args+=("$arg")
+	done
+	IFS=\;
+      }
+	
+      $CMD "${args[@]}"
+      rc=$?
+      echo " " $CMD "${args[@]}" | $LOGGER
+      if [ $rc -ne 0 ]; then 
+        echo "Error in $CONFFILE" | $LOGGER
+      fi
+    done
+
+    # In PREROUTING or POSTROUTING chains we are done here.
+    if [ "$NCHAIN" = "PREROUTING" -o "$NCHAIN" = "POSTROUTING" ]; then
+      return
+    fi
+
+    # Ignore timing problems with old connections
+    $IPTABLES -A $NCHAIN $iodir ${INTF} -p tcp -m tcp --tcp-flags ACK,PSH ACK,PSH -j DROP
+    [ "$USE_IPV6" = "1" ] && $IP6TABLES -A $NCHAIN $iodir ${INTF} -p tcp -m tcp --tcp-flags ACK,PSH ACK,PSH -j DROP
+
+    # Install the final autoblock rule if this is the INPUT or FORWARD chain.
+    # We allow upto 1 probe per minute or a burst of 3 probes. This should be 
+    # a good balance to catch the real bad guys. Note that until the IP is
+    # blocked these systems are logged using the rule below this one.
+    if [ "$IF_EXT_AUTO_BLOCK" = "1" -a "$NCHAIN" != "OUTPUT" ]; then
+      if [ "${EXTERN4}" = "1" ]; then
+        $IPTABLES -A $NCHAIN $iodir ${INTF} \
+	      -m hashlimit --hashlimit-above ${IF_EXT_AUTO_LIMIT} --hashlimit-burst ${IF_EXT_AUTO_BURST} --hashlimit-mode srcip --hashlimit-name hash-auto4 \
+	      -j SET --add-set mbsefw-auto4 src
+      fi
+      if [ "${EXTERN6}" = "1" ]; then
+	$IP6TABLES -A $NCHAIN $iodir ${INTF} \
+	      -m hashlimit --hashlimit-above ${IF_EXT_AUTO_LIMIT} --hashlimit-burst ${IF_EXT_AUTO_BURST} --hashlimit-mode srcip --hashlimit-name hash-auto6 \
+	      -j SET --add-set mbsefw-auto6 src
+      fi
+    fi
+    # deny and log the rest
+    $IPTABLES  -A $NCHAIN $iodir ${INTF} -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=$NCHAIN "
+    [ "$USE_IPV6" == "1" ] && $IP6TABLES -A $NCHAIN $iodir ${INTF} -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=$NCHAIN "
+    $IPTABLES  -A $NCHAIN $iodir ${INTF} -j DROP
+    [ "$USE_IPV6" == "1" ] && $IP6TABLES -A $NCHAIN $iodir ${INTF} -j DROP
+    echo -n "."
+  fi
+}
+
+
+
+fw_start_interface()
+{
+  fw_start_interface_chain $1 "prerouting"  "PREROUTING"  "pre"
+  fw_start_interface_chain $1 "input"       "INPUT"       "in"
+  fw_start_interface_chain $1 "output"      "OUTPUT"      "out"
+  fw_start_interface_chain $1 "forward"     "FORWARD"     "fwd"
+  fw_start_interface_chain $1 "postrouting" "POSTROUTING" "post"
+}
+
+
+
+fw_start_main() {
+  i=0
+
+  [ -n "$IF_EXT" ]   && fw_start_interface "$IF_EXT"
+  [ -n "$IF_EXT6" ]  && fw_start_interface "$IF_EXT6"
+
+  while [ $i -lt 50 ];
+  do
+    [ -z "${IF_TRUNK[$i]}" ] && break
+    fw_start_interface "${IF_TRUNK[$i]}"
+    i=$(($i+1))
+  done
+}
+
+
+
+fw_start_final() {
+  # Deny and log everything else
+  $IPTABLES -N FINAL_RULE
+  $IPTABLES -A OUTPUT  -j FINAL_RULE
+  $IPTABLES -A INPUT   -j FINAL_RULE
+  [ "$FW_FORWARD" = "1" ] && $IPTABLES -A FORWARD -j FINAL_RULE
+  $IPTABLES -A FINAL_RULE  -m limit --limit 10/minute -j LOG  --log-level info --log-prefix "DENY=999 "
+  $IPTABLES -A FINAL_RULE  -j DROP
+  if [ "$USE_IPV6" = "1" ]; then
+    $IP6TABLES -N FINAL_RULE
+    $IP6TABLES -A OUTPUT  -j FINAL_RULE
+    $IP6TABLES -A INPUT   -j FINAL_RULE
+    [ "$FW_FORWARD" = "1" ] && $IP6TABLES -A FORWARD -j FINAL_RULE
+    $IP6TABLES -A FINAL_RULE  -m limit --limit 10/minute -j LOG  --log-level info --log-prefix "DENY=999 "
+    $IP6TABLES -A FINAL_RULE  -j DROP
+  fi
+  echo "Firewall installed" | $LOGGER
+}
+
+
+
+fw_install() {
+  echo -n "Installing $(basename $0) $MBSEFW_VERSION: "
+  reset_iptables DROP
+  echo -n "."
+  fw_init_sysctl
+  echo -n "."
+  fw_start_init
+  fw_start_main
+  fw_start_final
+  echo " done."
+}
+
+
+
+fw_start() {
+  if [ -f /etc/mbse-firewall/data/firewall-ipv4.data -a \
+       -f /etc/mbse-firewall/data/firewall-ipv6.data -a \
+       -f /etc/mbse-firewall/data/firewall-ipset.data ]; then
+    # Do a full restore of all saved data
+    echo -n "Starting $(basename $0) $MBSEFW_VERSION: "
+    echo "Start new firewall" | $LOGGER
+    reset_iptables DROP
+    echo -n "."
+    fw_init_sysctl
+    $IPSET restore < /etc/mbse-firewall/data/firewall-ipset.data
+    echo " Restored /etc/mbse-firewall/data/firewall-ipset.data" | $LOGGER
+    echo -n "."
+    $IPTABLES_RESTORE  < /etc/mbse-firewall/data/firewall-ipv4.data
+    echo " Restored /etc/mbse-firewall/data/firewall-ipv4.data" | $LOGGER
+    echo -n "."
+    $IP6TABLES_RESTORE < /etc/mbse-firewall/data/firewall-ipv6.data
+    echo " Restored /etc/mbse-firewall/data/firewall-ipv6.data" | $LOGGER
+    echo " done."
+    echo -n "New firewall active" | $LOGGER
+  else
+    # If there is no saved firewall, install a new one and save it.
+    fw_install
+    fw_save
+  fi
+}
+
+
+
+fw_stop() {
+  echo -n "Stopping $(basename $0) $MBSEFW_VERSION: "
+  # Slackware defaults to ACCEPT when no firewall is active.
+  reset_iptables ACCEPT
+  echo "done."
+}
+
+
+
+# If there are blocklist tables, reload them.
+fw_reload() {
+  echo -n "Reload $(basename $0) $MBSEFW_VERSION: "
+  reload_blocklist4
+  reload_blocklist6
+  echo done.
+}
+
+
+
+fw_save() {
+  echo -n "Saving $(basename $0) $MBSEFW_VERSION: "
+  echo "Saving firewall" | $LOGGER
+  mkdir -p /etc/mbse-firewall/data
+  [ -n "$IPTABLES_SAVE" ]  && $IPTABLES_SAVE  > /etc/mbse-firewall/data/firewall-ipv4.data
+  echo -n "."
+  [ -n "$IP6TABLES_SAVE" ] && $IP6TABLES_SAVE > /etc/mbse-firewall/data/firewall-ipv6.data
+  echo -n "."
+
+  rm -f /etc/mbse-firewall/data/firewall-ipset.data
+  touch /etc/mbse-firewall/data/firewall-ipset.data
+  SETS="$($IPSET list -n)"
+  for set in $SETS ; do
+    if [ "$set" = "mbsefw-auto4" -o "$set" = "mbsefw-auto6" ]; then
+      # Only save structure for auto blocklists
+      $IPSET save $set -t >> /etc/mbse-firewall/data/firewall-ipset.data
+    else
+      $IPSET save $set >> /etc/mbse-firewall/data/firewall-ipset.data
+    fi
+    echo -n "."
+  done
+  echo " done."
+  echo "Save firewall done in /etc/mbse-firewall/data" | $LOGGER
+}
+
+
+
+fw_status() {
+
+  echo -n "$(basename $0) $MBSEFW_VERSION"
+
+  IP_MODULES=$($LSMOD | $AWK '{print $1}' | $GREP '^ip')
+  if [ "${IP_MODULES}x" = "x" ]; then
+    echo "  -  You do not have any iptables loaded."
+    return
+  else
+    echo "  -  You have the following ip modules loaded:"
+    echo -n "  "
+    echo ${IP_MODULES}
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP iptable_filter )" ]; then
+    echo
+    echo '                                   FILTER TABLE IPv4'
+    echo
+    $IPTABLES -t filter -L -n -v --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP ip6table_filter )" ]; then
+    echo
+    echo '                                   FILTER TABLE IPv6'
+    echo
+    $IP6TABLES -t filter -L -n -v --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP iptable_nat )" ]; then
+    echo
+    echo '                                   NAT TABLE IPv4'
+    echo
+    $IPTABLES -t nat -L -v -n --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP ip6table_nat )" ]; then
+    echo
+    echo '                                   NAT TABLE IPv6'
+    echo
+    $IP6TABLES -t nat -L -v -n --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP iptable_raw )" ]; then
+    echo
+    echo '                                   RAW TABLE IPv4'
+    echo
+    $IPTABLES -t raw -L -v -n --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP ip6table_raw )" ]; then
+    echo
+    echo '                                   RAW TABLE IPv6'
+    echo
+    $IP6TABLES -t raw -L -v -n --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP iptable_mangle )" ]; then
+    echo
+    echo '                                  MANGLE TABLE IPv4'
+    echo
+    $IPTABLES -t mangle -L -v -n --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP ip6table_mangle )" ]; then
+    echo
+    echo '                                  MANGLE TABLE IPv6'
+    echo
+    $IP6TABLES -t mangle -L -v -n --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP iptable_security )" ]; then
+    echo
+    echo '                                 SECURITY TABLE IPv4'
+    echo
+    $IPTABLES -t security -L -v -n --line-numbers
+  fi
+
+  if [ ! -z "$( echo $IP_MODULES | $GREP ip6table_security )" ]; then
+    echo
+    echo '                                 SECURITY TABLE IPv6'
+    echo
+    $IP6TABLES -t security -L -v -n --line-numbers
+  fi
+
+  if [ -n "$IPSET" ] && [ ! -z "$($IPSET list)" ]; then
+    echo
+    echo '                                     IPSET listing'
+    echo
+    $IPSET list
+  fi
+}
+
+
+
+# ---------------------------------------------------------------------------
+#
+# MAIN program part
+#
+# ---------------------------------------------------------------------------
+
+
+# See how we were called
+cmd=$1
+
+case "$cmd" in
+  start)
+	  fw_start
+	  ;;
+
+  stop)
+	  fw_stop
+	  ;;
+
+  restart)
+	  fw_stop
+	  fw_start
+	  ;;
+
+  save)
+	  fw_save
+	  ;;
+  install)
+	  fw_install
+	  ;;
+  reload)
+	  fw_reload
+	  ;;
+  status)
+	  fw_status
+	  ;;
+
+  *)
+	  echo "Usage $0 [start|stop|restart|status]"
+	  ;;
+esac
+
+

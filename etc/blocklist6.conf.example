@@ -1,0 +1,15 @@
+# /etc/mbse-firewall/conf.d/blocklist6.conf
+#
+# List with blocked IPv6 networks. All entries must be in address/netmask
+# format because blocking individual IPv6 addresses is useless. Block at
+# least a /64 network.
+#
+# 2001:DB8:dead:beef::/64
+#
+# This file is loaded with the following commands: install or reload.
+# Comments begin with a # and can be placed behind entries too.
+#
+2001:DB8:dead:beef::/64		# comment
+2001:DB8:c0:ffee::/64
+2001:db8:daed::/48
+
