@@ -15,3 +15,5 @@ install:
 	@mkdir -p ${DESTDIR}/etc/rc.d
 	cd ${DESTDIR}/etc/rc.d ; ln -s /usr/sbin/mbse-firewall rc.firewall ; cd -
 
+dist:
+	cd .. ; tar cvfz mbse-firewall-`grep MBSEFW_VERSION= mbse-firewall/sbin/mbse-firewall | cut -d '=' -f 2 | tr -d '"'`.tar.gz mbse-firewall/* ; cd -
