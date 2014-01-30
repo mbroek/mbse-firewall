@@ -1,0 +1,14 @@
+# /etc/mbse-firewall/conf.d/blocklist4.conf
+#
+# List with blocked IP's. Syntax can be networks in CIDR notation or plain
+# IPv4 addresses. For example:
+#
+# 1.2.3.4	a plain IPv4 address
+# 5.6.7.0/24	a IPv4 network.
+#
+# This file is loaded with the following commands: install or reload.
+# Comments begin with a # and can be placed behind entries too.
+#
+1.2.3.4
+5.6.7.0/24
+3.4.5.0/17	# Real bad network

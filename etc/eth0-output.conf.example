@@ -1,0 +1,47 @@
+# /etc/mbse-firewall/conf.d/eth0-output.conf
+#
+# This table is ; separated. From the data in the fields ip(6)tables commands
+# are created by the main program. The filename of this file is 
+# <iface>-[forward|input|output|postrouting|prerouting].conf and from this name
+# the initial part of the command is created.
+#
+# The first field is a 4 or 6 and defines if this is a IPv4 or IPv6 rule.
+#
+# The second field is tha -t table type. Values are nat, mangle ... or empty
+# for the default filter type.
+#
+# The 3rd field is the protocol, tcp, udp, igmp, raw etc.
+#
+# The 4th field is the source address or source network. Valid notations
+# are 10.126.150.2 10.1.1.0/24 2001:1af8:feb8:7e96::2
+# 2001:1af8:feb8:7e96::2/64 or 0/0 for any.
+#
+# The 5th field is the source port or ports. Ports may be command separated
+# or ranges or a combination of that. See man iptables for the syntax.
+#
+# The 6th field is the destination address.
+#
+# The 7th field is the destination port or ports
+#
+# The 8th field is the action, can be any valid action like:
+#    DROP 
+#    ACCEPT
+#    REJECT --reject-with tcp-reset
+#
+# The 9th field is special tests, for example:
+#    -m state --state NEW
+#    -m hashlimit --hashlimit 5/second --hashlimit-burst 10 --hashlimit-mode srcip --hashlimit-name torrent
+#    -m connlimit \! --connlimit-above 3 -m hashlimit --hashlimit 1/second --hashlimit-burst 2 --hashlimit-mode srcip --hashlimit-name openvpn
+#    -m connlimit --connlimit-above 35
+# If you want, write several conditions in the same field.
+
+# Log all traffic
+4;;;;;;;NFLOG --nflog-group 1
+6;;;;;;;NFLOG --nflog-group 1
+
+# Allow all traffic out
+4;;tcp;;;;;ACCEPT;
+4;;udp;;;;;ACCEPT;
+6;;tcp;;;;;ACCEPT;
+6;;udp;;;;;ACCEPT;
+
