@@ -22,7 +22,7 @@
 # Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 # ---------------------------------------------------------------------------
 
-MBSEFW_VERSION="0.0.12"
+MBSEFW_VERSION="0.0.13"
 
 # Sanity checks
 if [ "$(id -u)" != "0" ]; then
@@ -53,6 +53,7 @@ AWK=$(which awk 2>/dev/null)
 GREP=$(which grep 2>/dev/null)
 IPSET=$(which ipset 2>/dev/null)
 SYSCTL=$(which sysctl 2>/dev/null)
+NFACCT=$(which nfacct 2>/dev/null)
 
 if [ "$USE_IPV6" = "1" ]; then
   IP6TABLES=$(which ip6tables 2>/dev/null)
@@ -185,6 +186,21 @@ reload_blocklist6() {
 
 
 
+fw_init_nfacct() {
+  NFACCTCONF="/etc/mbse-firewall/conf.d/nfacct.conf"
+  if [ -f $NFACCTCONF ]; then
+    echo "Init netfilter accounting" | $LOGGER
+    $GREP -Ev '^#|^;|^\s*$' $NFACCTCONF | while read L ; do
+      set $L
+      if [ -z "$($NFACCT list | $GREP $1)" ]; then
+        $NFACCT add $1
+      fi
+    done
+  fi
+}
+
+
+
 fw_init_sysctl() {
   # If we have bridges and don't want iptables to work between
   # the physical interfaces, turn it off.
@@ -248,6 +264,9 @@ fw_start_init() {
     done
     echo -n "."
   fi
+
+  fw_init_nfacct
+  echo -n "."
 
   # accept established and related connections
   $IPTABLES -A INPUT   -m state --state ESTABLISHED,RELATED -j ACCEPT 
@@ -665,6 +684,7 @@ fw_start() {
     # Do a full restore of all saved data
     echo -n "Starting $(basename $0) $MBSEFW_VERSION: "
     echo "Start new firewall" | $LOGGER
+    fw_init_nfacct
     reset_iptables DROP
     echo -n "."
     fw_init_sysctl

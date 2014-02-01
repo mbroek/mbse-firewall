@@ -1,0 +1,9 @@
+# /etc/mbse-firewall/conf.d/nfacct.conf
+#
+# List with netfilter accounting objects.
+#
+# This file is loaded with the following commands: install or start.
+# Comments begin with a # and can be placed behind entries too.
+#
+ipv4.in			# ipv4 input traffic
+ipv4.http		# ipv4 webserver traffic
