@@ -22,7 +22,7 @@
 # Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 # ---------------------------------------------------------------------------
 
-MBSEFW_VERSION="0.0.13"
+MBSEFW_VERSION="0.0.15"
 
 # Sanity checks
 if [ "$(id -u)" != "0" ]; then
@@ -228,11 +228,11 @@ fw_start_init() {
     echo "  Install $BLOCKLIST" | $LOGGER
     $IPSET create mbsefw-blk4ip hash:ip counters -exist
     $IPSET create mbsefw-blk4net hash:net counters -exist
-    $IPTABLES -A INPUT -i $IF_EXT -m set --match-set mbsefw-blk4ip src -j DROP
-    $IPTABLES -A INPUT -i $IF_EXT -m set --match-set mbsefw-blk4net src -j DROP
+    $IPTABLES -A INPUT -i $IF_EXT -m state --state NEW -m set --match-set mbsefw-blk4ip src -j DROP
+    $IPTABLES -A INPUT -i $IF_EXT -m state --state NEW -m set --match-set mbsefw-blk4net src -j DROP
     if [ "$FW_FORWARD" = "1" ]; then
-      $IPTABLES -A FORWARD -i $IF_EXT -m set --match-set mbsefw-blk4ip src -j DROP
-      $IPTABLES -A FORWARD -i $IF_EXT -m set --match-set mbsefw-blk4net src -j DROP
+      $IPTABLES -A FORWARD -i $IF_EXT -m state --state NEW -m set --match-set mbsefw-blk4ip src -j DROP
+      $IPTABLES -A FORWARD -i $IF_EXT -m state --state NEW -m set --match-set mbsefw-blk4net src -j DROP
     fi
     $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
       set $L
@@ -254,9 +254,9 @@ fw_start_init() {
     else
       IF6=$IF_EXT
     fi
-    $IP6TABLES -A INPUT -i $IF6 -m set --match-set mbsefw-blk6 src -j DROP
+    $IP6TABLES -A INPUT -i $IF6 -m state --state NEW -m set --match-set mbsefw-blk6 src -j DROP
     if [ "$FW_FORWARD" = "1" ]; then
-      $IP6TABLES -A FORWARD -i $IF6 -m set --match-set mbsefw-blk6 src -j DROP
+      $IP6TABLES -A FORWARD -i $IF6 -m state --state NEW -m set --match-set mbsefw-blk6 src -j DROP
     fi
     $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
       set $L
@@ -589,16 +589,22 @@ fw_start_interface_chain()
     [ "$USE_IPV6" = "1" ] && $IP6TABLES -A $NCHAIN $iodir ${INTF} -p tcp -m tcp --tcp-flags ACK,PSH ACK,PSH -j DROP
 
     # Install the final autoblock rule if this is the INPUT or FORWARD chain.
-    # We allow upto 1 probe per minute or a burst of 3 probes. This should be 
+    # We allow upto 5 probes per minute or a burst of 10 probes. This should be 
     # a good balance to catch the real bad guys. Note that until the IP is
     # blocked these systems are logged using the rule below this one.
     if [ "$IF_EXT_AUTO_BLOCK" = "1" -a "$NCHAIN" != "OUTPUT" ]; then
       if [ "${EXTERN4}" = "1" ]; then
+	# First, ignore these. Can happen after a temporary network problem.
+	$IPTABLES -A $NCHAIN $iodir ${INTF} -p tcp -m tcp --tcp-flags ALL ACK -j DROP
+	# Now the real rule.
         $IPTABLES -A $NCHAIN $iodir ${INTF} \
 	      -m hashlimit --hashlimit-above ${IF_EXT_AUTO_LIMIT} --hashlimit-burst ${IF_EXT_AUTO_BURST} --hashlimit-mode srcip --hashlimit-name hash-auto4 \
 	      -j SET --add-set mbsefw-auto4 src
       fi
       if [ "${EXTERN6}" = "1" ]; then
+	# First, ignore these. Can happen after a temporary network problem.
+	$IP6TABLES -A $NCHAIN $iodir ${INTF} -p tcp -m tcp --tcp-flags ALL ACK -j DROP
+	# Now the real rule.
 	$IP6TABLES -A $NCHAIN $iodir ${INTF} \
 	      -m hashlimit --hashlimit-above ${IF_EXT_AUTO_LIMIT} --hashlimit-burst ${IF_EXT_AUTO_BURST} --hashlimit-mode srcip --hashlimit-name hash-auto6 \
 	      -j SET --add-set mbsefw-auto6 src
@@ -885,7 +891,15 @@ case "$cmd" in
 	  ;;
 
   *)
-	  echo "Usage $0 [start|stop|restart|status]"
+	  echo "Usage $0 [start|stop|restart|save|install|reload|status]"
+	  echo
+	  echo "start      start a saved firewall"
+	  echo "stop       stop firewall and set default ACCEPT state"
+	  echo "restart    stop and start the firewall"
+	  echo "save       save current installed firewall rules"
+	  echo "install    install new firewall from configuration"
+	  echo "reload     reload the blocklists"
+	  echo "status     show the firewall rules and counters"
 	  ;;
 esac
 
