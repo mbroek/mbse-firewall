@@ -22,7 +22,7 @@
 # Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 # ---------------------------------------------------------------------------
 
-MBSEFW_VERSION="0.0.15"
+MBSEFW_VERSION="0.0.16"
 
 # Sanity checks
 if [ "$(id -u)" != "0" ]; then
@@ -118,8 +118,13 @@ reset_iptables() {
   fi
 
   # Remove any ipset tables.
-  $IPSET flush
-  $IPSET destroy
+  HOST="$(hostname)"
+  SETS="$(${IPSET} list -n | grep ${HOST})"
+  for MySET in ${SETS}; do
+    $IPSET flush ${MySET}
+    $IPSET destroy ${MySET}
+    echo "Destroyed IPSET table ${MySET}" | $LOGGER
+  done
 }
 
 
@@ -146,24 +151,26 @@ is_external_if6() {
 reload_blocklist4() {
 
   BLOCKLIST="/etc/mbse-firewall/conf.d/blocklist4.conf"
+  HOST="$(hostname)"
+
   if [ -f $BLOCKLIST ]; then
     echo "Reload $BLOCKLIST" | $LOGGER
-    $IPSET create new-mbsefw-blk4ip hash:ip counters -exist
-    $IPSET create new-mbsefw-blk4net hash:net counters -exist
+    $IPSET create ${HOST}-new-mbsefw-blk4ip hash:ip counters -exist
+    $IPSET create ${HOST}new-mbsefw-blk4net hash:net counters -exist
     $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
       set $L
       if echo $1 | $GREP -q "/" ; then
-        $IPSET add new-mbsefw-blk4net $1 -exist
+        $IPSET add ${HOST}-new-mbsefw-blk4net $1 -exist
       else
-        $IPSET add new-mbsefw-blk4ip $1 -exist
+        $IPSET add ${HOST}-new-mbsefw-blk4ip $1 -exist
       fi
     done
-    $IPSET swap mbsefw-blk4net new-mbsefw-blk4net
-    $IPSET flush new-mbsefw-blk4net
-    $IPSET destroy new-mbsefw-blk4net
-    $IPSET swap mbsefw-blk4ip new-mbsefw-blk4ip
-    $IPSET flush new-mbsefw-blk4ip
-    $IPSET destroy new-mbsefw-blk4ip
+    $IPSET swap ${HOST}-mbsefw-blk4net ${HOST}-new-mbsefw-blk4net
+    $IPSET flush ${HOST}-new-mbsefw-blk4net
+    $IPSET destroy ${HOST}-new-mbsefw-blk4net
+    $IPSET swap ${HOST}-mbsefw-blk4ip ${HOST}-new-mbsefw-blk4ip
+    $IPSET flush ${HOST}-new-mbsefw-blk4ip
+    $IPSET destroy ${HOST}-new-mbsefw-blk4ip
   fi
 }
 
@@ -172,15 +179,17 @@ reload_blocklist4() {
 reload_blocklist6() {
 
   BLOCKLIST="/etc/mbse-firewall/conf.d/blocklist6.conf"
+  HOST="$(hostname)"
+
   if [ -f $BLOCKLIST ]; then
     echo "Reload $BLOCKLIST" | $LOGGER
-    $IPSET create new-mbsefw-blk6 hash:net family inet6 counters -exist
+    $IPSET create ${HOST}-new-mbsefw-blk6 hash:net family inet6 counters -exist
     $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
-      set $L ; $IPSET add new-mbsefw-blk6 $1 -exist
+      set $L ; $IPSET add ${HOST}-new-mbsefw-blk6 $1 -exist
     done
-    $IPSET swap mbsefw-blk6 new-mbsefw-blk6
-    $IPSET flush new-mbsefw-blk6
-    $IPSET destroy new-mbsefw-blk6
+    $IPSET swap ${HOST}-mbsefw-blk6 ${HOST}-new-mbsefw-blk6
+    $IPSET flush ${HOST}-new-mbsefw-blk6
+    $IPSET destroy ${HOST}-new-mbsefw-blk6
   fi
 }
 
@@ -224,22 +233,24 @@ fw_start_init() {
   echo "Init new firewall" | $LOGGER
 
   BLOCKLIST="/etc/mbse-firewall/conf.d/blocklist4.conf"
+  HOST="$(hostname)"
+
   if [ -f $BLOCKLIST -a -n "$IF_EXT" ]; then
     echo "  Install $BLOCKLIST" | $LOGGER
-    $IPSET create mbsefw-blk4ip hash:ip counters -exist
-    $IPSET create mbsefw-blk4net hash:net counters -exist
-    $IPTABLES -A INPUT -i $IF_EXT -m state --state NEW -m set --match-set mbsefw-blk4ip src -j DROP
-    $IPTABLES -A INPUT -i $IF_EXT -m state --state NEW -m set --match-set mbsefw-blk4net src -j DROP
+    $IPSET create ${HOST}-mbsefw-blk4ip hash:ip counters -exist
+    $IPSET create ${HOST}-mbsefw-blk4net hash:net counters -exist
+    $IPTABLES -A INPUT -i $IF_EXT -m state --state NEW -m set --match-set ${HOST}-mbsefw-blk4ip src -j DROP
+    $IPTABLES -A INPUT -i $IF_EXT -m state --state NEW -m set --match-set ${HOST}-mbsefw-blk4net src -j DROP
     if [ "$FW_FORWARD" = "1" ]; then
-      $IPTABLES -A FORWARD -i $IF_EXT -m state --state NEW -m set --match-set mbsefw-blk4ip src -j DROP
-      $IPTABLES -A FORWARD -i $IF_EXT -m state --state NEW -m set --match-set mbsefw-blk4net src -j DROP
+      $IPTABLES -A FORWARD -i $IF_EXT -m state --state NEW -m set --match-set ${HOST}-mbsefw-blk4ip src -j DROP
+      $IPTABLES -A FORWARD -i $IF_EXT -m state --state NEW -m set --match-set ${HOST}-mbsefw-blk4net src -j DROP
     fi
     $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
       set $L
       if echo $1 | $GREP -q "/" ; then
-        $IPSET add mbsefw-blk4net $1 -exist
+        $IPSET add ${HOST}-mbsefw-blk4net $1 -exist
       else
-	$IPSET add mbsefw-blk4ip $1 -exist
+	$IPSET add ${HOST}-mbsefw-blk4ip $1 -exist
       fi
     done
     echo -n "."
@@ -248,19 +259,19 @@ fw_start_init() {
   BLOCKLIST="/etc/mbse-firewall/conf.d/blocklist6.conf"
   if [ -f $BLOCKLIST ]; then
     echo "  Install $BLOCKLIST" | $LOGGER
-    $IPSET create mbsefw-blk6 hash:net family inet6 counters -exist
+    $IPSET create ${HOST}-mbsefw-blk6 hash:net family inet6 counters -exist
     if [ -n "$IF_EXT6" ]; then
       IF6=$IF_EXT6
     else
       IF6=$IF_EXT
     fi
-    $IP6TABLES -A INPUT -i $IF6 -m state --state NEW -m set --match-set mbsefw-blk6 src -j DROP
+    $IP6TABLES -A INPUT -i $IF6 -m state --state NEW -m set --match-set ${HOST}-mbsefw-blk6 src -j DROP
     if [ "$FW_FORWARD" = "1" ]; then
-      $IP6TABLES -A FORWARD -i $IF6 -m state --state NEW -m set --match-set mbsefw-blk6 src -j DROP
+      $IP6TABLES -A FORWARD -i $IF6 -m state --state NEW -m set --match-set ${HOST}-mbsefw-blk6 src -j DROP
     fi
     $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
       set $L
-      $IPSET add mbsefw-blk6 $1 -exist
+      $IPSET add ${HOST}-mbsefw-blk6 $1 -exist
     done
     echo -n "."
   fi
@@ -380,8 +391,10 @@ fw_start_init() {
 
     # rules to permit IPv6 Neighbor discovery
     $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type router-solicitation -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type router-solicitation -j DROP	# Silent drop HOPLIMIT <> 255
     $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type router-advertisement -m hl --hl-eq 255 -j ACCEPT
     $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-solicitation -j DROP	# Silent drop HOPLIMIT <> 255
     $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-advertisement -m hl --hl-eq 255 -j ACCEPT
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type router-solicitation -m hl --hl-eq 255 -j ACCEPT 
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type router-advertisement -m hl --hl-eq 255 -j ACCEPT 
@@ -462,6 +475,8 @@ fw_start_interface_chain()
   is_external_if6 $1
   EXTERN6=$?
 
+  HOST="$(hostname)"
+
   # TODO: use subchains, but we need to do 2 passes on the config
   # files to make it work.
 
@@ -477,13 +492,13 @@ fw_start_interface_chain()
       if [ "$IF_EXT_AUTO_BLOCK" = "1" ]; then
         if [ "$EXTERN4" = "1" ]; then
 	  echo "  Installing IPv4 auto blacklisting on interface ${INTF}" | $LOGGER
-          $IPSET create mbsefw-auto4 hash:ip timeout $IF_EXT_AUTO_TO counters -exist
-          $IPTABLES -I $NCHAIN -m set --match-set mbsefw-auto4 src -j DROP
+          $IPSET create ${HOST}-mbsefw-auto4 hash:ip timeout $IF_EXT_AUTO_TO counters -exist
+          $IPTABLES -I $NCHAIN -m set --match-set ${HOST}-mbsefw-auto4 src -j DROP
 	fi
 	if [ "$EXTERN6" = "1" ]; then
 	  echo "  Installing IPv6 auto blacklisting on interface ${INTF}" | $LOGGER
-          $IPSET create mbsefw-auto6 hash:ip family inet6 timeout $IF_EXT_AUTO_TO counters -exist
-          $IP6TABLES -I $NCHAIN -m set --match-set mbsefw-auto6 src -j DROP
+          $IPSET create ${HOST}-mbsefw-auto6 hash:ip family inet6 timeout $IF_EXT_AUTO_TO counters -exist
+          $IP6TABLES -I $NCHAIN -m set --match-set ${HOST}-mbsefw-auto6 src -j DROP
 	fi
       fi
     fi
@@ -599,7 +614,7 @@ fw_start_interface_chain()
 	# Now the real rule.
         $IPTABLES -A $NCHAIN $iodir ${INTF} \
 	      -m hashlimit --hashlimit-above ${IF_EXT_AUTO_LIMIT} --hashlimit-burst ${IF_EXT_AUTO_BURST} --hashlimit-mode srcip --hashlimit-name hash-auto4 \
-	      -j SET --add-set mbsefw-auto4 src
+	      -j SET --add-set ${HOST}-mbsefw-auto4 src
       fi
       if [ "${EXTERN6}" = "1" ]; then
 	# First, ignore these. Can happen after a temporary network problem.
@@ -607,7 +622,7 @@ fw_start_interface_chain()
 	# Now the real rule.
 	$IP6TABLES -A $NCHAIN $iodir ${INTF} \
 	      -m hashlimit --hashlimit-above ${IF_EXT_AUTO_LIMIT} --hashlimit-burst ${IF_EXT_AUTO_BURST} --hashlimit-mode srcip --hashlimit-name hash-auto6 \
-	      -j SET --add-set mbsefw-auto6 src
+	      -j SET --add-set ${HOST}-mbsefw-auto6 src
       fi
     fi
     # deny and log the rest
@@ -743,9 +758,10 @@ fw_save() {
 
   rm -f /etc/mbse-firewall/data/firewall-ipset.data
   touch /etc/mbse-firewall/data/firewall-ipset.data
-  SETS="$($IPSET list -n)"
+  HOST="$(hostname)"
+  SETS="$($IPSET list -n | grep ${HOST})"
   for set in $SETS ; do
-    if [ "$set" = "mbsefw-auto4" -o "$set" = "mbsefw-auto6" ]; then
+    if [ "$set" = "${HOST}-mbsefw-auto4" -o "$set" = "${HOST}-mbsefw-auto6" ]; then
       # Only save structure for auto blocklists
       $IPSET save $set -t >> /etc/mbse-firewall/data/firewall-ipset.data
     else
@@ -843,11 +859,15 @@ fw_status() {
     $IP6TABLES -t security -L -v -n --line-numbers
   fi
 
-  if [ -n "$IPSET" ] && [ ! -z "$($IPSET list)" ]; then
+  HOST="$(hostname)"
+  if [ -n "$IPSET" ] && [ ! -z "$($IPSET list -n | grep ${HOST})" ]; then
     echo
     echo '                                     IPSET listing'
-    echo
-    $IPSET list
+    SETS="$(${IPSET} list -n | grep ${HOST})"
+    for MySET in ${SETS}; do
+      echo
+      ${IPSET} list ${MySET}
+    done
   fi
 }
 
