@@ -400,6 +400,11 @@ fw_start_init() {
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type router-advertisement -m hl --hl-eq 255 -j ACCEPT 
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT 
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-advertisement -m hl --hl-eq 255 -j ACCEPT 
+    # Allow inverse neighbour discovery solicitation (141) / advertisement (142)
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type 141 -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type 142 -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type 141 -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type 142 -m hl --hl-eq 255 -j ACCEPT
 
     # MLD messages. DROP on external interface, but ACCEPT on others.
     if [ -n "$IF_EXT6" -a "$IF_EXT_IS_BORDER_GW" = "1" ]; then
