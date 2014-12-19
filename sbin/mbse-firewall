@@ -22,7 +22,7 @@
 # Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 # ---------------------------------------------------------------------------
 
-MBSEFW_VERSION="0.0.16"
+MBSEFW_VERSION="0.0.17"
 
 # Sanity checks
 if [ "$(id -u)" != "0" ]; then
@@ -156,7 +156,7 @@ reload_blocklist4() {
   if [ -f $BLOCKLIST ]; then
     echo "Reload $BLOCKLIST" | $LOGGER
     $IPSET create ${HOST}-new-mbsefw-blk4ip hash:ip counters -exist
-    $IPSET create ${HOST}new-mbsefw-blk4net hash:net counters -exist
+    $IPSET create ${HOST}-new-mbsefw-blk4net hash:net counters -exist
     $GREP -Ev '^#|^;|^\s*$' $BLOCKLIST | while read L ; do
       set $L
       if echo $1 | $GREP -q "/" ; then
