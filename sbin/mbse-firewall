@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ---------------------------------------------------------------------------
-# Copyright (C) 2013-2014 by Michiel Broek.
+# Copyright (C) 2013-2015 by Michiel Broek.
 # Homepage                   http://www.mbse.eu
 # Email                      mbse At mbse dOt eu
 #
@@ -22,7 +22,7 @@
 # Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 # ---------------------------------------------------------------------------
 
-MBSEFW_VERSION="0.0.17"
+MBSEFW_VERSION="0.0.18"
 
 # Sanity checks
 if [ "$(id -u)" != "0" ]; then
@@ -273,6 +273,26 @@ fw_start_init() {
       set $L
       $IPSET add ${HOST}-mbsefw-blk6 $1 -exist
     done
+    echo -n "."
+  fi
+
+  # If we use the global blocktables.
+  if [ "$IF_EXT_GLOBAL_BLOCK" == "1" ]; then
+    $IPTABLES -A INPUT -i $IF_EXT -m state --state NEW -m set --match-set global-blk4 src -j DROP
+    if [ "$FW_FORWARD" = "1" ]; then
+      $IPTABLES -A FORWARD -i $IF_EXT -m state --state NEW -m set --match-set global-blk4 src -j DROP
+    fi
+    if [ "$USE_IPV6" == "1" ]; then
+      if [ -n "$IF_EXT6" ]; then
+        IF6=$IF_EXT6
+      else
+        IF6=$IF_EXT
+      fi
+      $IP6TABLES -A INPUT -i $IF6 -m state --state NEW -m set --match-set global-blk6 src -j DROP
+      if [ "$FW_FORWARD" = "1" ]; then
+        $IP6TABLES -A FORWARD -i $IF6 -m state --state NEW -m set --match-set global-blk6 src -j DROP
+      fi
+    fi
     echo -n "."
   fi
 
