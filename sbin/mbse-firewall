@@ -22,7 +22,7 @@
 # Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 # ---------------------------------------------------------------------------
 
-MBSEFW_VERSION="0.0.18"
+MBSEFW_VERSION="0.0.19"
 
 # Sanity checks
 if [ "$(id -u)" != "0" ]; then
@@ -278,9 +278,9 @@ fw_start_init() {
 
   # If we use the global blocktables.
   if [ "$IF_EXT_GLOBAL_BLOCK" == "1" ]; then
-    $IPTABLES -A INPUT -i $IF_EXT -m state --state NEW -m set --match-set global-blk4 src -j DROP
+    $IPTABLES -A INPUT -i $IF_EXT -m set --match-set global-blk4 src -j DROP
     if [ "$FW_FORWARD" = "1" ]; then
-      $IPTABLES -A FORWARD -i $IF_EXT -m state --state NEW -m set --match-set global-blk4 src -j DROP
+      $IPTABLES -A FORWARD -i $IF_EXT -m set --match-set global-blk4 src -j DROP
     fi
     if [ "$USE_IPV6" == "1" ]; then
       if [ -n "$IF_EXT6" ]; then
@@ -288,9 +288,9 @@ fw_start_init() {
       else
         IF6=$IF_EXT
       fi
-      $IP6TABLES -A INPUT -i $IF6 -m state --state NEW -m set --match-set global-blk6 src -j DROP
+      $IP6TABLES -A INPUT -i $IF6 -m set --match-set global-blk6 src -j DROP
       if [ "$FW_FORWARD" = "1" ]; then
-        $IP6TABLES -A FORWARD -i $IF6 -m state --state NEW -m set --match-set global-blk6 src -j DROP
+        $IP6TABLES -A FORWARD -i $IF6 -m set --match-set global-blk6 src -j DROP
       fi
     fi
     echo -n "."
