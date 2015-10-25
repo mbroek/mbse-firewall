@@ -22,7 +22,7 @@
 # Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 # ---------------------------------------------------------------------------
 
-MBSEFW_VERSION="0.0.19"
+MBSEFW_VERSION="0.0.20"
 
 # Sanity checks
 if [ "$(id -u)" != "0" ]; then
@@ -362,14 +362,14 @@ fw_start_init() {
   $IPTABLES -A INPUT   -p icmp  -m icmp  --icmp-type 8/0  -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
   $IPTABLES -A INPUT   -p icmp  -m icmp  --icmp-type 11/0 -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
   $IPTABLES -A INPUT   -p icmp  -m icmp  --icmp-type 11/1 -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
-  $IPTABLES -A INPUT   -p icmp  -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv4_INPUT "
+  $IPTABLES -A INPUT   -p icmp  -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=ICMPv4_INPUT "
   $IPTABLES -A INPUT   -p icmp  -j DROP
   $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 3    -j ACCEPT
   $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 0/0  -j ACCEPT
   $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 8/0  -j ACCEPT
   $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 11/0 -j ACCEPT
   $IPTABLES -A OUTPUT  -p icmp  -m icmp  --icmp-type 11/1 -j ACCEPT
-  $IPTABLES -A OUTPUT  -p icmp  -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv4_OUTPUT "
+  $IPTABLES -A OUTPUT  -p icmp  -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=ICMPv4_OUTPUT "
   $IPTABLES -A OUTPUT  -p icmp  -j DROP
   if [ "$FW_FORWARD" = "1" ]; then
     $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 3    -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
@@ -377,7 +377,7 @@ fw_start_init() {
     $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 8/0  -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
     $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 11/0 -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
     $IPTABLES -A FORWARD -p icmp  -m icmp  --icmp-type 11/1 -m hashlimit --hashlimit 15/second --hashlimit-mode srcip --hashlimit-name icmp -j ACCEPT
-    $IPTABLES -A FORWARD -p icmp  -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv4_FORWARD "
+    $IPTABLES -A FORWARD -p icmp  -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=ICMPv4_FORWARD "
     $IPTABLES -A FORWARD -p icmp  -j DROP
   fi
 
@@ -435,12 +435,12 @@ fw_start_init() {
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -d ff00::/8 -m icmp6 --icmpv6-type 143 -j ACCEPT
 
     # Drop unmatched icmpv6 but log them so we can debug
-    $IP6TABLES -A INPUT   -p ipv6-icmp -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv6_INPUT "
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=ICMPv6_INPUT "
     $IP6TABLES -A INPUT   -p ipv6-icmp -j DROP
-    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv6_OUTPUT "
+    $IP6TABLES -A OUTPUT  -p ipv6-icmp -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=ICMPv6_OUTPUT "
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -j DROP
     [ "$FW_FORWARD" = "1" ] && {
-      $IP6TABLES -A FORWARD -p ipv6-icmp -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=ICMPv6_FORWARD "
+      $IP6TABLES -A FORWARD -p ipv6-icmp -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=ICMPv6_FORWARD "
       $IP6TABLES -A FORWARD -p ipv6-icmp -j DROP
     }
   fi
@@ -651,8 +651,8 @@ fw_start_interface_chain()
       fi
     fi
     # deny and log the rest
-    $IPTABLES  -A $NCHAIN $iodir ${INTF} -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=$NCHAIN "
-    [ "$USE_IPV6" == "1" ] && $IP6TABLES -A $NCHAIN $iodir ${INTF} -m limit --limit 10/minute -j LOG --log-level info --log-prefix "DENY=$NCHAIN "
+    $IPTABLES  -A $NCHAIN $iodir ${INTF} -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=$NCHAIN "
+    [ "$USE_IPV6" == "1" ] && $IP6TABLES -A $NCHAIN $iodir ${INTF} -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=$NCHAIN "
     $IPTABLES  -A $NCHAIN $iodir ${INTF} -j DROP
     [ "$USE_IPV6" == "1" ] && $IP6TABLES -A $NCHAIN $iodir ${INTF} -j DROP
     echo -n "."
@@ -694,14 +694,14 @@ fw_start_final() {
   $IPTABLES -A OUTPUT  -j FINAL_RULE
   $IPTABLES -A INPUT   -j FINAL_RULE
   [ "$FW_FORWARD" = "1" ] && $IPTABLES -A FORWARD -j FINAL_RULE
-  $IPTABLES -A FINAL_RULE  -m limit --limit 10/minute -j LOG  --log-level info --log-prefix "DENY=999 "
+  $IPTABLES -A FINAL_RULE  -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=999 "
   $IPTABLES -A FINAL_RULE  -j DROP
   if [ "$USE_IPV6" = "1" ]; then
     $IP6TABLES -N FINAL_RULE
     $IP6TABLES -A OUTPUT  -j FINAL_RULE
     $IP6TABLES -A INPUT   -j FINAL_RULE
     [ "$FW_FORWARD" = "1" ] && $IP6TABLES -A FORWARD -j FINAL_RULE
-    $IP6TABLES -A FINAL_RULE  -m limit --limit 10/minute -j LOG  --log-level info --log-prefix "DENY=999 "
+    $IP6TABLES -A FINAL_RULE  -m limit --limit 10/minute -j "${FW_LOGDEST[@]}" "DENY=999 "
     $IP6TABLES -A FINAL_RULE  -j DROP
   fi
   echo "Firewall installed" | $LOGGER
@@ -910,15 +910,18 @@ cmd=$1
 
 case "$cmd" in
   start)
+	  [ -x /etc/rc.d/rc.ulogd ] && /etc/rc.d/rc.ulogd start
 	  fw_start
 	  ;;
 
   stop)
 	  fw_stop
+	  [ -x /etc/rc.d/rc.ulogd ] && /etc/rc.d/rc.ulogd stop
 	  ;;
 
   restart)
 	  fw_stop
+	  [ -x /etc/rc.d/rc.ulogd ] && /etc/rc.d/rc.ulogd restart
 	  fw_start
 	  ;;
 
