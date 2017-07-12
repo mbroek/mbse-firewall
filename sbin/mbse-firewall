@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ---------------------------------------------------------------------------
-# Copyright (C) 2013-2016 by Michiel Broek.
+# Copyright (C) 2013-2017 by Michiel Broek.
 # Homepage                   http://www.mbse.eu
 # Email                      mbse At mbse dOt eu
 #
@@ -22,7 +22,7 @@
 # Software Foundation, 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 # ---------------------------------------------------------------------------
 
-MBSEFW_VERSION="0.0.22"
+MBSEFW_VERSION="0.0.23"
 
 # Sanity checks
 if [ "$(id -u)" != "0" ]; then
@@ -426,6 +426,7 @@ fw_start_init() {
     $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT
     $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-solicitation -j DROP	# Silent drop HOPLIMIT <> 255
     $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-advertisement -m hl --hl-eq 255 -j ACCEPT
+    $IP6TABLES -A INPUT   -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-advertisement -j DROP    # Silent drop HOPLIMIT <> 255
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type router-solicitation -m hl --hl-eq 255 -j ACCEPT 
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type router-advertisement -m hl --hl-eq 255 -j ACCEPT 
     $IP6TABLES -A OUTPUT  -p ipv6-icmp -m icmp6 --icmpv6-type neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT 
